@@ -2,6 +2,7 @@
 
 #include "types.h"
 #include "user.h"
+#include "stat.h"
 #include "fcntl.h"
 
 // Parsed command representation
@@ -12,6 +13,11 @@
 #define BACK  5
 
 #define MAXARGS 10
+
+char * username;
+char * uid;
+char * homePath;
+char * groupList;
 
 struct cmd {
   int type;
@@ -63,10 +69,12 @@ runcmd(struct cmd *cmd)
   struct listcmd *lcmd;
   struct pipecmd *pcmd;
   struct redircmd *rcmd;
+  int fd;
+  struct stat st;
 
   if(cmd == 0)
     exit();
-
+  
   switch(cmd->type){
   default:
     panic("runcmd");
@@ -75,6 +83,47 @@ runcmd(struct cmd *cmd)
     ecmd = (struct execcmd*)cmd;
     if(ecmd->argv[0] == 0)
       exit();
+
+    if((fd = open(ecmd->argv[0], 0)) < 0)
+    {
+	printf(2, "exec %s failed\n", ecmd->argv[0]);
+	close(fd);
+	exit();
+    }
+
+    if(fstat(fd, &st) < 0)
+    {
+	printf(2, "%s: cannot exec1\n",ecmd->argv[0]);
+	close(fd);
+	exit();
+    }
+if((st.ownerid == stoi(uid)) && !(st.mode&0x100))
+    {
+	printf(2, "%s: cannot exec\n",ecmd->argv[0]);
+	close(fd);
+	exit();
+    }
+else if((st.groupid == stoi(groupList)) && !(st.mode&0x10))
+    {
+	printf(2, "%s: cannot exec\n",ecmd->argv[0]);
+	close(fd);
+	exit();
+    }
+else if((st.ownerid != stoi(uid)) && (st.groupid != stoi(groupList)) && !(st.mode&0x1))
+    {
+	printf(2, "%s: cannot exec\n",ecmd->argv[0]);
+	close(fd);
+	exit();
+    }
+    //char** argvV;
+    //argvV = malloc(ecmd->argc)
+    int j = 0;
+    for(int i = 0;ecmd->argv[i];i++)
+    {
+	j++;
+    }
+    ecmd->argv[j] = uid;
+    ecmd->argv[j+1] = groupList;
     exec(ecmd->argv[0], ecmd->argv);
     printf(2, "exec %s failed\n", ecmd->argv[0]);
     break;
@@ -120,7 +169,7 @@ runcmd(struct cmd *cmd)
     wait();
     wait();
     break;
-
+    
   case BACK:
     bcmd = (struct backcmd*)cmd;
     if(fork1() == 0)
@@ -130,44 +179,124 @@ runcmd(struct cmd *cmd)
   exit();
 }
 
-int
-getcmd(char *buf, int nbuf)
-{
-  printf(2, "$ ");
+char path[256];
+
+
+int getcmd(char *buf, int nbuf){
+						   
+ 
+  printf(2, "%s@OS:%s~$ ",username,path);
   memset(buf, 0, nbuf);
   gets(buf, nbuf);
-  if(buf[0] == 0) // EOF
+  if(buf[0] == 0){ // EOF
     return -1;
+}
   return 0;
 }
 
-int
-main(void)
-{
+int main(int argc, char * argv[]){
+  username = argv[0];
+  uid = argv[1];
+  homePath = argv[2];
+  groupList = argv[3];
+  char * dir = malloc(100);
+  //printf(1,"%s\n", username);
+  //struct stat st;
   static char buf[100];
+  strcpy(dir , "/home/");
+  strcpy(dir + strlen(dir), username);
+  chdir(dir);
+  int i = 0;
+  for (i = 0; i < strlen(dir); i++){
+      path[i] = dir[i];
+  }
+  path[i] = '/';
+  int lastPos = i;
   int fd;
-
-  // Ensure that three file descriptors are open.
+  int bash;  
+  
+  // Assumes three file descriptors open.
   while((fd = open("console", O_RDWR)) >= 0){
     if(fd >= 3){
       close(fd);
       break;
     }
   }
-
+  //Create file if it's not there
+  bash = open("/.bash_history",O_CREATE | O_RDWR);
   // Read and run input commands.
-  while(getcmd(buf, sizeof(buf)) >= 0){
-    if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
-      // Chdir must be called by the parent, not the child.
+  while(getcmd(buf, sizeof(buf)) >= 0){ 
+
+    if(buf[0]!='\n'){
+      write(bash, buf, strlen(buf));
+    }
+    if(buf[0] == 'l' && buf[1] == 'o' && buf[2] == 'g' && buf[3] == 'o' && buf[4] == 'u' && buf[5] == 't'){
+      exit();
+    }
+    else if(buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' '){
+      // Clumsy but will have to do for now.
+      // Chdir has no effect on the parent if run in the child.
       buf[strlen(buf)-1] = 0;  // chop \n
-      if(chdir(buf+3) < 0)
+	/*if(buf[3] != '.' && ((stat(buf+3,&st) < 0) || ((st.ownerid == stoi(uid)) && !(st.mode&0x100)) || ((st.groupid == stoi(groupList)) && !(st.mode&0x10)) || ((st.ownerid != stoi(uid)) && (st.groupid != stoi(groupList)) && !(st.mode&0x1))))
+      {
+	printf(2, "cannot cd %s\n", buf+3);
+      }
+      else */if(chdir(buf+3) < 0){
         printf(2, "cannot cd %s\n", buf+3);
+	}
+      else{
+       if(buf[3] == '.' && buf[4] == '.'){
+          path[strlen(path)-1] = '\0';
+          while(path[lastPos] != '/'){
+            path[lastPos--] = '\0';
+          }
+        }
+        else if (buf[3] == '/' && (buf[4]==' ' || buf[4] == '\0')){
+          path[0] = '/';
+          int i;
+          for (i = 1; i < strlen(path); i++){
+            path[i] = 0;
+          }
+          lastPos = 1;
+        }
+        else{
+          int iter = 3;          
+	while(buf[iter] != '\0'){
+            path[++lastPos] = buf[iter];
+            iter++;
+          }
+          path[++lastPos] = '/';
+	  path[++lastPos] = '\0';
+	  lastPos--;
+          iter = 3;
+        }
+      }
       continue;
     }
-    if(fork1() == 0)
-      runcmd(parsecmd(buf));
+    else if(buf[0] == 'p' && buf[1] == 'w' && buf[2] == 'd' && (buf[3] == ' ' || buf[3]=='\n')){
+      //Get the directory to print it now
+      printf(2,"%s\n",path);
+      
+    }
+    else if(fork1() == 0){
+      if (buf[0] == '\n'){
+        runcmd(parsecmd(buf));
+      }
+      else{
+        char p[sizeof(buf)+1];
+        p[0] = '/';
+        int i = 0;
+        while(buf[i]!='\0'){
+          p[i+1] = buf[i];
+          i++;
+        }
+        runcmd(parsecmd(p));
+      }
+    }
+    
     wait();
   }
+  close(bash);
   exit();
 }
 
@@ -182,7 +311,7 @@ int
 fork1(void)
 {
   int pid;
-
+  
   pid = fork();
   if(pid == -1)
     panic("fork");
@@ -267,7 +396,7 @@ gettoken(char **ps, char *es, char **q, char **eq)
 {
   char *s;
   int ret;
-
+  
   s = *ps;
   while(s < es && strchr(whitespace, *s))
     s++;
@@ -300,7 +429,7 @@ gettoken(char **ps, char *es, char **q, char **eq)
   }
   if(eq)
     *eq = s;
-
+  
   while(s < es && strchr(whitespace, *s))
     s++;
   *ps = s;
@@ -311,7 +440,7 @@ int
 peek(char **ps, char *es, char *toks)
 {
   char *s;
-
+  
   s = *ps;
   while(s < es && strchr(whitespace, *s))
     s++;
@@ -419,7 +548,7 @@ parseexec(char **ps, char *es)
   int tok, argc;
   struct execcmd *cmd;
   struct cmd *ret;
-
+  
   if(peek(ps, es, "("))
     return parseblock(ps, es);
 
@@ -458,7 +587,7 @@ nulterminate(struct cmd *cmd)
 
   if(cmd == 0)
     return 0;
-
+  
   switch(cmd->type){
   case EXEC:
     ecmd = (struct execcmd*)cmd;
@@ -477,7 +606,7 @@ nulterminate(struct cmd *cmd)
     nulterminate(pcmd->left);
     nulterminate(pcmd->right);
     break;
-
+    
   case LIST:
     lcmd = (struct listcmd*)cmd;
     nulterminate(lcmd->left);
